@@ -8,7 +8,7 @@
  */
 
 package net.mamoe.mirai.console.graphical.view
-
+/*
 import com.jfoenix.controls.JFXTreeTableColumn
 import javafx.application.Platform
 import javafx.collections.ObservableList
@@ -180,3 +180,4 @@ class PluginsCenterView : View() {
     }
 
 }
+ */

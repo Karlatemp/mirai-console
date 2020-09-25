@@ -7,47 +7,148 @@
  * https://github.com/mamoe/mirai/blob/master/LICENSE
  */
 
+@file:Suppress(
+    "INVISIBLE_MEMBER",
+    "INVISIBLE_REFERENCE",
+    "CANNOT_OVERRIDE_INVISIBLE_MEMBER",
+    "INVISIBLE_SETTER",
+    "INVISIBLE_GETTER",
+    "INVISIBLE_ABSTRACT_MEMBER_FROM_SUPER",
+    "INVISIBLE_ABSTRACT_MEMBER_FROM_SUPER_WARNING",
+    "EXPOSED_SUPER_CLASS"
+)
+@file:OptIn(ConsoleInternalApi::class, ConsoleFrontEndImplementation::class)
+
 package net.mamoe.mirai.console.graphical.controller
 
 import javafx.application.Platform
 import javafx.collections.ObservableList
 import javafx.stage.Modality
 import javafx.stage.StageStyle
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.*
 import net.mamoe.mirai.Bot
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
+import net.mamoe.mirai.console.MiraiConsole
+import net.mamoe.mirai.console.MiraiConsoleFrontEndDescription
+import net.mamoe.mirai.console.MiraiConsoleImplementation
+import net.mamoe.mirai.console.command.BuiltInCommands
+import net.mamoe.mirai.console.command.CommandExecuteStatus
 import net.mamoe.mirai.console.command.CommandManager
-import net.mamoe.mirai.console.command.CommandManager.runCommand
+import net.mamoe.mirai.console.command.CommandManager.INSTANCE.executeCommand
 import net.mamoe.mirai.console.command.ConsoleCommandSender
+import net.mamoe.mirai.console.data.MultiFilePluginDataStorage
+import net.mamoe.mirai.console.data.PluginDataStorage
 import net.mamoe.mirai.console.graphical.event.ReloadEvent
 import net.mamoe.mirai.console.graphical.model.*
+import net.mamoe.mirai.console.graphical.util.getValue
 import net.mamoe.mirai.console.graphical.view.dialog.InputDialog
 import net.mamoe.mirai.console.graphical.view.dialog.VerificationCodeFragment
-import net.mamoe.mirai.console.plugins.PluginManager
-import net.mamoe.mirai.console.utils.MiraiConsoleFrontEnd
+import net.mamoe.mirai.console.plugin.jvm.JvmPluginLoader
+import net.mamoe.mirai.console.plugin.loader.PluginLoader
+import net.mamoe.mirai.console.util.*
+import net.mamoe.mirai.message.data.Message
 import net.mamoe.mirai.network.CustomLoginFailedException
-import net.mamoe.mirai.utils.LoginSolver
-import net.mamoe.mirai.utils.MiraiLogger
-import net.mamoe.mirai.utils.SimpleLogger
+import net.mamoe.mirai.utils.*
 import net.mamoe.mirai.utils.SimpleLogger.LogPriority
-import tornadofx.Controller
-import tornadofx.Scope
-import tornadofx.find
-import tornadofx.observableListOf
+import tornadofx.*
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.collections.List
-import kotlin.collections.forEach
-import kotlin.collections.mutableMapOf
-import kotlin.collections.set
 import kotlin.coroutines.resume
 
-class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
+@ConsoleExperimentalApi
+class MiraiConsoleImplementationGraphical
+@JvmOverloads constructor(
+    override val rootPath: Path = Paths.get(".").toAbsolutePath(),
+    override val builtInPluginLoaders: List<Lazy<PluginLoader<*, *>>> = listOf(lazy { JvmPluginLoader }),
+    override val frontEndDescription: MiraiConsoleFrontEndDescription = ConsoleFrontEndDescImpl,
+    override val consoleCommandSender: MiraiConsoleImplementation.ConsoleCommandSenderImpl = ConsoleCommandSenderImplGraphical,
+    override val dataStorageForJvmPluginLoader: PluginDataStorage = MultiFilePluginDataStorage(rootPath.resolve("data")),
+    override val dataStorageForBuiltIns: PluginDataStorage = MultiFilePluginDataStorage(rootPath.resolve("data")),
+    override val configStorageForJvmPluginLoader: PluginDataStorage = MultiFilePluginDataStorage(rootPath.resolve("config")),
+    override val configStorageForBuiltIns: PluginDataStorage = MultiFilePluginDataStorage(rootPath.resolve("config")),
+) : MiraiConsoleImplementation, CoroutineScope by CoroutineScope(
+    NamedSupervisorJob("MiraiConsoleImplementationTerminal") +
+        CoroutineExceptionHandler { coroutineContext, throwable ->
+            if (throwable is CancellationException) {
+                return@CoroutineExceptionHandler
+            }
+            val coroutineName = coroutineContext[CoroutineName]?.name ?: "<unnamed>"
+            MiraiConsole.mainLogger.error("Exception in coroutine $coroutineName", throwable)
+        }) {
+    override val consoleInput: ConsoleInput = object : ConsoleInput {
+        override suspend fun requestInput(hint: String): String = controller.requestInput(hint)
+    }
 
-    private val settingModel = find<GlobalSettingModel>()
-    private val loginSolver = GraphicalLoginSolver()
-    private val cache = mutableMapOf<Long, BotModel>()
+    override fun createLoginSolver(requesterBot: Long, configuration: BotConfiguration): LoginSolver = controller.loginSolver
+
+    override fun createLogger(identity: String?): MiraiLogger = controller.LoggerCreator(identity)
+
+    init {
+        with(rootPath.toFile()) {
+            mkdir()
+            require(isDirectory) { "rootDir $absolutePath is not a directory" }
+        }
+    }
+
+    lateinit var controller: MiraiGraphicalFrontEndController
+}
+
+
+internal object ConsoleCommandSenderImplGraphical : MiraiConsoleImplementation.ConsoleCommandSenderImpl {
+    val ui by lazy { find<MiraiGraphicalFrontEndController>() }
+    override suspend fun sendMessage(message: String) {
+        ui.run {
+            Platform.runLater {
+                val time = ui.sdf.format(Date())
+                mainLog.apply {
+                    add("[$time] $message" to "INFO")
+                    trim()
+                }
+            }
+        }
+    }
+
+    override suspend fun sendMessage(message: Message) {
+        return sendMessage(message.toString())
+    }
+}
+
+private object ConsoleFrontEndDescImpl : MiraiConsoleFrontEndDescription {
+    override val name: String get() = "Graphical"
+    override val vendor: String get() = "Mamoe Technologies"
+    override val version: SemVersion = net.mamoe.mirai.console.internal.MiraiConsoleBuildConstants.version
+}
+
+class MiraiGraphicalFrontEndController : Controller() {
+    lateinit var graphical: MiraiConsoleImplementationGraphical
+    fun Throwable?.rend(): String {
+        if (this == null) return ""
+        return StringWriter().also { writer ->
+            PrintWriter(writer).use { printStackTrace(it) }
+        }.toString()
+    }
+
+    internal val LoggerCreator: (identity: String?) -> MiraiLogger = {
+        SimpleLogger(null) { priority: LogPriority, message: String?, e: Throwable? ->
+            Platform.runLater {
+                val time = sdf.format(Date())
+                mainLog.apply {
+                    add("[$time] $message${e.rend()}" to priority.name)
+                    trim()
+                }
+            }
+        }
+    }
+
+    internal val sdf by ThreadLocal.withInitial { SimpleDateFormat("HH:mm:ss") }
+
+    internal val settingModel = find<GlobalSettingModel>()
+    internal val loginSolver = GraphicalLoginSolver()
+    internal val cache = mutableMapOf<Long, BotModel>()
     val mainLog = observableListOf<Pair<String, String>>()
 
 
@@ -55,8 +156,6 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
     val pluginList: ObservableList<PluginModel> by lazy(::getPluginsFromConsole)
 
     private val consoleInfo = ConsoleInfo()
-
-    internal val sdf by lazy { SimpleDateFormat("HH:mm:ss") }
 
     init {
         // 监听插件重载事件，以重新从console获取插件列表
@@ -69,7 +168,8 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
     }
 
     fun login(qq: String, psd: String) {
-        CommandManager.runCommand(ConsoleCommandSender, "login $qq $psd")
+        val bot = MiraiConsole.addBot(qq.toLong(), psd)
+        MiraiConsole.launch(CoroutineName("Bot $qq login")) { bot.login() }
     }
 
     fun logout(qq: Long) {
@@ -81,39 +181,44 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
         }
     }
 
-    fun sendCommand(command: String) = runCommand(ConsoleCommandSender, command)
+    val consoleLogger by lazy { DefaultLogger("console") }
 
-
-    private val mainLogger = SimpleLogger(null) { priority: LogPriority, message: String?, e: Throwable? ->
-        Platform.runLater {
-            val time = sdf.format(Date())
-            mainLog.apply {
-                add("[$time] $message" to priority.name)
-                trim()
+    fun sendCommand(command: String) {
+        runBlocking {
+            val next = command.let {
+                when {
+                    it.isBlank() -> it
+                    it.startsWith(CommandManager.commandPrefix) -> it
+                    it == "?" -> CommandManager.commandPrefix + BuiltInCommands.HelpCommand.primaryName
+                    else -> CommandManager.commandPrefix + it
+                }
+            }
+            if (next.isBlank()) {
+                return@runBlocking
+            }
+            // consoleLogger.debug("INPUT> $next")
+            val result = ConsoleCommandSender.executeCommand(next)
+            when (result.status) {
+                CommandExecuteStatus.SUCCESSFUL -> {
+                }
+                CommandExecuteStatus.ILLEGAL_ARGUMENT -> {
+                    result.exception?.message?.let { consoleLogger.warning(it) }
+                }
+                CommandExecuteStatus.EXECUTION_EXCEPTION -> {
+                    result.exception?.let(consoleLogger::error)
+                }
+                CommandExecuteStatus.COMMAND_NOT_FOUND -> {
+                    consoleLogger.warning("未知指令: ${result.commandName}, 输入 ? 获取帮助")
+                }
+                CommandExecuteStatus.PERMISSION_DENIED -> {
+                    consoleLogger.warning("Permission denied.")
+                }
             }
         }
     }
 
-    override fun loggerFor(identity: Long): MiraiLogger {
-        return if (identity == 0L) return mainLogger
-        else cache[identity]?.logger ?: kotlin.error("bot not found: $identity")
-    }
 
-
-    override fun prePushBot(identity: Long) = Platform.runLater {
-        if (!cache.containsKey(identity)) {
-            BotModel(identity).also {
-                cache[identity] = it
-                botList.add(it)
-            }
-        }
-    }
-
-    override fun pushBot(bot: Bot) = Platform.runLater {
-        cache[bot.id]?.bot = bot
-    }
-
-    override fun pushVersion(consoleVersion: String, consoleBuild: String, coreVersion: String) {
+    fun pushVersion(consoleVersion: String, consoleBuild: String, coreVersion: String) {
         Platform.runLater {
             consoleInfo.consoleVersion = consoleVersion
             consoleInfo.consoleBuild = consoleBuild
@@ -121,22 +226,26 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
         }
     }
 
-    override suspend fun requestInput(hint: String): String =
+    suspend fun requestInput(hint: String): String =
         suspendCancellableCoroutine {
             Platform.runLater {
                 it.resume(InputDialog(hint).open())
             }
         }
 
-    override fun pushBotAdminStatus(identity: Long, admins: List<Long>) = Platform.runLater {
+    /*
+    fun pushBotAdminStatus(identity: Long, admins: List<Long>) = Platform.runLater {
         cache[identity]?.admins?.setAll(admins)
     }
+    */
 
-    override fun createLoginSolver(): LoginSolver = loginSolver
+    // fun createLoginSolver(): LoginSolver = loginSolver
 
     private fun getPluginsFromConsole(): ObservableList<PluginModel> =
-        PluginManager.getAllPluginDescriptions().map(::PluginModel).toObservable()
+        listOf<PluginModel>().toObservable()
+//        PluginManager.getAllPluginDescriptions().map(::PluginModel).toObservable()
 
+    /*
     fun checkUpdate(plugin: PluginModel) {
         pluginList.forEach {
             if (it.name == plugin.name && it.author == plugin.author) {
@@ -147,16 +256,17 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
             }
         }
     }
+    */
 
     /**
      * return `true` when command is ambiguous
      */
     fun checkAmbiguous(plugin: PluginModel): Boolean {
-        plugin.insight?.commands?.forEach { name ->
-            CommandManager.commands.forEach {
-                if (name == it.name) return true
-            }
-        } ?: return false
+//        plugin.insight?.commands?.forEach { name ->
+//            CommandManager.commands.forEach {
+//                if (name == it.name) return true
+//            }
+//        } ?: return false
         return false
     }
 
@@ -166,14 +276,14 @@ class MiraiGraphicalFrontEndController : Controller(), MiraiConsoleFrontEnd {
         }
     }
 
-    fun reloadPlugins() {
-
-        with(PluginManager) {
-            reloadPlugins()
-        }
-
-        fire(ReloadEvent) // 广播插件重载事件
-    }
+//    fun reloadPlugins() {
+//
+//        with(PluginManager) {
+//            reloadPlugins()
+//        }
+//
+//        fire(ReloadEvent) // 广播插件重载事件
+//    }
 }
 
 class GraphicalLoginSolver : LoginSolver() {

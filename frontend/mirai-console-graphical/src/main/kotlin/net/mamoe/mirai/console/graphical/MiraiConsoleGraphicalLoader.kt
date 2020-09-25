@@ -9,27 +9,45 @@
 
 package net.mamoe.mirai.console.graphical
 
-import kotlinx.coroutines.cancel
-import net.mamoe.mirai.console.MiraiConsole
+import com.jfoenix.adapters.ReflectionHelper
+import io.github.karlatemp.unsafeaccessor.Unsafe
 import tornadofx.launch
-import kotlin.concurrent.thread
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
+import java.lang.reflect.AccessibleObject
+import java.lang.reflect.Field
+import java.lang.reflect.Modifier
 
-class MiraiConsoleGraphicalLoader {
-     companion object {
-         internal var coreVersion   :String = "0.0.0"
-         internal var consoleVersion: String = "0.0.0"
-         @JvmStatic
-         fun load(
-            coreVersion: String,
-            consoleVersion: String
-         ) {
-            this.coreVersion    = coreVersion
-            this.consoleVersion = consoleVersion
-             Runtime.getRuntime().addShutdownHook(thread(start = false) {
-                 MiraiConsole.cancel()
-             })
-            launch<MiraiGraphicalUI>()
-        }
+object MiraiConsoleGraphicalLoader {
+    fun prestart() {
 
+        val field = ReflectionHelper::class.java.getDeclaredField("objectFieldOffset")
+        field.isAccessible = true
+        if ((field[null] as Long) != 0L) return
+        val unsafe = Unsafe.getUnsafe()
+        val mhl = MethodHandles.Lookup::class.java
+        val lookupClassOffset = unsafe.objectFieldOffset(mhl, "lookupClass")
+        val allowedModesOffset = unsafe.objectFieldOffset(mhl, "allowedModes")
+        val rootLookup = MethodHandles.lookup()
+        // make it root
+        unsafe.putReference(rootLookup, lookupClassOffset, java.lang.Object::class.java)
+        unsafe.putInt(rootLookup, allowedModesOffset, -1)
+        // getDeclaredFields0(publicOnly: Boolean)
+        @Suppress("UNCHECKED_CAST") val fields = rootLookup.findVirtual(
+            Class::class.java, "getDeclaredFields0",
+            MethodType.methodType(
+                /* ret   = */ Array<Field>::class.java,
+                /* types = */ java.lang.Boolean.TYPE
+            )
+        ).invokeWithArguments(AccessibleObject::class.java, /* publicOnly */false) as Array<Field>
+        field.setLong(null, unsafe.objectFieldOffset(fields.first {
+            !Modifier.isStatic(it.modifiers) && it.type == java.lang.Boolean.TYPE
+        }))
+    }
+
+    @JvmStatic
+    fun main(args: Array<String>) {
+        prestart()
+        launch<MiraiGraphicalUI>(args)
     }
 }

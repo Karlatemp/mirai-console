@@ -8,7 +8,7 @@
  */
 
 package net.mamoe.mirai.console.graphical.view.dialog
-
+/*
 import javafx.geometry.Insets
 import net.mamoe.mirai.console.center.PluginCenter
 import net.mamoe.mirai.console.graphical.util.jfxTextfield
@@ -83,3 +83,4 @@ class PluginDetailFragment(info: PluginCenter.PluginInfo) : Fragment() {
         }
     }
 }
+ */

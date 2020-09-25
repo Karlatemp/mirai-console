@@ -9,7 +9,11 @@
 
 package net.mamoe.mirai.console.graphical
 
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
 import net.mamoe.mirai.console.MiraiConsole
+import net.mamoe.mirai.console.MiraiConsoleImplementation.Companion.start
+import net.mamoe.mirai.console.graphical.controller.MiraiConsoleImplementationGraphical
 import net.mamoe.mirai.console.graphical.controller.MiraiGraphicalFrontEndController
 import net.mamoe.mirai.console.graphical.stylesheet.PrimaryStyleSheet
 import net.mamoe.mirai.console.graphical.view.Decorator
@@ -28,16 +32,17 @@ class MiraiGraphicalUI : App(Decorator::class, PrimaryStyleSheet::class) {
 
     override fun init() {
         super.init()
-        MiraiConsole.start(
-            find<MiraiGraphicalFrontEndController>(),
-            MiraiConsoleGraphicalLoader.coreVersion,
-            MiraiConsoleGraphicalLoader.consoleVersion
-        )
+        val a = find<MiraiGraphicalFrontEndController>()
+        val impl = MiraiConsoleImplementationGraphical().also { it.controller = a }
+        a.graphical = impl
+        impl.start()
     }
 
     override fun stop() {
         super.stop()
-        MiraiConsole.stop()
+        runBlocking {
+            MiraiConsole.job.cancelAndJoin()
+        }
         exitProcess(0)
     }
 }

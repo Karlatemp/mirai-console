@@ -12,9 +12,11 @@ package net.mamoe.mirai.console.graphical.stylesheet
 import javafx.scene.layout.BackgroundRepeat
 import javafx.scene.paint.Color
 import net.mamoe.mirai.console.MiraiConsole
+import net.mamoe.mirai.console.graphical.controller.MiraiGraphicalFrontEndController
 import tornadofx.Stylesheet
 import tornadofx.cssclass
 import tornadofx.csselement
+import tornadofx.find
 import java.io.File
 import kotlin.random.Random
 
@@ -43,7 +45,7 @@ open class BaseStyleSheet : Stylesheet() {
 
 
             jfxTabPane {
-                val bg = File(MiraiConsole.path, "background")
+                val bg = File(find<MiraiGraphicalFrontEndController>().graphical.rootPath.toFile(), "background")
                 if (!bg.exists()) bg.mkdir()
                 if (bg.isDirectory) {
                     bg.listFiles()!!.filter { file -> file.extension in listOf("jpg", "jpeg", "png", "gif") }
